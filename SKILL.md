@@ -113,7 +113,8 @@ These rules come from the official texts as of October 2026: Ley 20.446, Decreto
    - The warning that the method is locked for the whole year. Use the year view: say whether the sales after the period change which method is cheaper. Ask what sales they still expect before Dec 31.
    - The ficto vs real trade-off: ficto needs a declaración jurada
    - The boleto 2908 steps
-   - The open questions (A–I) printed in the report. If the methods differ a lot, recommend confirming A and B with an accountant before paying.
+   - The open questions (A–I) printed in the report. If the methods differ a lot, recommend confirming the ones that move the amount most with an accountant before paying.
+   - When the user settles an open question, record it in `<data>/decisiones.json`, not in the skill: `{"B": {"decision": "...", "fecha": "YYYY-MM-DD", "fuente": "decisión del contribuyente" | "contador ..."}}`. The script loads it automatically and moves that question to "Decisiones tomadas". If the decision changes the calculation (for example B → `--no-wht-credit`), run with the matching flag.
    - The **Optimización de inversiones** box: summarize its 2–3 most relevant tips. The script only prints a tip when the data triggers it (break-even margin vs 20%, sales that earned less than the 2.4% ficto cost, realized losses, loss harvesting or carry-forward, US withholding over 20%, untaxed pre-2026 gains). Add your own context-specific tips in chat, but don't invent numbers.
    - The **Mejores / Peores ventas (top 10)** tables: one row per sale order (broker + date + symbol, lots summed), ranked by fiscal result (31/12/2025 basis for pre-2026 lots). Mention the biggest winner and loser briefly.
 

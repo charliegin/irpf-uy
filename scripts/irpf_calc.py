@@ -524,8 +524,31 @@ def fx_note(r):
             "del semestre (pregunta E) — " + "; ".join(parts) + "._")
 
 
-def report(events, r, warnings, period, prior_paid, year=None):
-    """year: None, or (year_events, year_result, first_day, last_day) for the year-to-date view."""
+def questions_section(questions, decisions, warnings):
+    """Split the open questions into the ones the user already decided and the rest."""
+    decided, still_open, letters = [], [], set()
+    for q in questions:
+        letter = re.match(r"- \*\*([A-Z])\.\*\*", q).group(1)
+        letters.add(letter)
+        d = decisions.get(letter)
+        if d:
+            source = ", ".join(x for x in (d.get("fuente"), d.get("fecha")) if x)
+            decided.append(f"- **{letter}.** {d['decision']}" + (f" _({source})_" if source else ""))
+        else:
+            still_open.append(q)
+    for letter in sorted(set(decisions) - letters):
+        warnings.append(f"decisiones.json: no existe la pregunta {letter}")
+    out = []
+    if decided:
+        out += ["", "## Decisiones tomadas", ""] + decided
+    if still_open:
+        out += ["", "## Preguntas abiertas para confirmar con un contador", ""] + still_open
+    return out
+
+
+def report(events, r, warnings, period, prior_paid, year=None, decisions=None):
+    """year: None, or (year_events, year_result, first_day, last_day) for the year-to-date view.
+    decisions: {letter: {"decision", "fecha", "fuente"}} the user settled (decisiones.json)."""
     m = r["methods"]
     my = year[1]["methods"] if year else None
     if year:
@@ -648,9 +671,10 @@ def report(events, r, warnings, period, prior_paid, year=None):
     if warnings:
         out += ["", "## Advertencias", ""] + [f"- {w}" for w in warnings]
 
-    out += ["", "## Preguntas abiertas para confirmar con un contador", "",
-            "- **A.** (Criterio aplicado) Lotes comprados antes de 2026: costo fiscal = valor de mercado al 31/12/2025. "
-            "La rentabilidad hasta esa fecha no está gravada, y las pérdidas previas tampoco se computan.",
+    questions = [
+            "- **A.** (Según el decreto) Activos cotizantes comprados antes de 2026: costo fiscal = cotización al 31/12/2025 "
+            "(art. 29 ter, obligatorio). La rentabilidad hasta esa fecha no está gravada, y las pérdidas previas tampoco "
+            "se computan. Confirmar el tratamiento de activos que no cotizan.",
             "- **B.** (Criterio aplicado) Las retenciones del exterior se descuentan como crédito fiscal, hasta el 12% de "
             "IRPF de cada dividendo; el excedente se pierde. Dividendos y crédito van en la declaración jurada anual. "
             "Confirmar si el crédito puede descontarse ya en el anticipo o solo en la declaración jurada "
@@ -678,8 +702,9 @@ def report(events, r, warnings, period, prior_paid, year=None):
             "transferencia, retiro e intereses deudores no se dedujeron. La normativa no lo detalla.",
             "- **I.** Arrastre de pérdidas a ejercicios siguientes: la reglamentación revisada no lo menciona "
             "(la columna \"Pérdida\" es informativa).",
-            "",
-            "_Este cálculo es una ayuda, no asesoramiento tributario._", ""]
+    ]
+    out += questions_section(questions, decisions or {}, warnings)
+    out += ["", "_Este cálculo es una ayuda, no asesoramiento tributario._", ""]
     return "\n".join(out)
 
 
@@ -697,6 +722,7 @@ section{background:var(--card);border:1px solid var(--line);border-radius:10px;p
 section.resultado,section.recomendación{border-color:var(--accent)}
 section.recomendación{background:var(--accent-bg)}
 section.advertencias,section.preguntas{background:var(--warn-bg)}
+section.decisiones{border-color:var(--accent)}
 section.optimización{border-color:var(--info);background:var(--info-bg)}
 section.optimización strong{color:var(--info)}
 section.optimización li{margin-bottom:8px}
@@ -857,6 +883,11 @@ def selftest():
     # Selling more than the pool falls back to the broker's lot cost, with a warning
     evs = [pos("buy", 1, Decimal(100), None, 1), pos("sale", 5, Decimal(400), None, 2, proceeds=Decimal(600))]
     assert apply_average_cost(evs) and evs[1]["cost"] == Decimal(400) and not evs[1].get("avg")
+    # A settled question moves from "Preguntas abiertas" to "Decisiones tomadas"
+    w = []
+    out = questions_section(["- **A.** x", "- **B.** y"], {"B": {"decision": "Sí", "fecha": "2026-10-21"}}, w)
+    assert out.index("## Decisiones tomadas") < out.index("## Preguntas abiertas para confirmar con un contador")
+    assert "- **B.** Sí _(2026-10-21)_" in out and "- **B.** y" not in out and not w
     print("selftest OK")
 
 
@@ -876,6 +907,7 @@ def main():
                          "or each broker's own lot cost (question G)")
     ap.add_argument("--no-wht-credit", action="store_true",
                     help="do not credit foreign withholding in this anticipo (question B)")
+    ap.add_argument("--decisions", help="JSON of settled open questions; default: decisiones.json next to events.csv")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
@@ -920,7 +952,14 @@ def main():
     ignored = len(taxable) - len(year_events)
     if ignored:
         warnings.append(f"{ignored} eventos de otros años en events.csv: no se usaron")
-    text = report(period_events, r, warnings, args.period, Decimal(args.prior_paid_uyu), year)
+    decisions_path = args.decisions or os.path.join(os.path.dirname(os.path.abspath(args.events)), "decisiones.json")
+    decisions = {}
+    if os.path.exists(decisions_path):
+        with open(decisions_path, encoding="utf-8") as f:
+            decisions = {k.upper(): v for k, v in json.load(f).items()}
+    if decisions.get("B") and args.no_wht_credit:
+        warnings.append("decisiones.json dice que el crédito se descuenta (B), pero se usó --no-wht-credit")
+    text = report(period_events, r, warnings, args.period, Decimal(args.prior_paid_uyu), year, decisions)
     if args.out:
         if args.out.endswith(".html"):
             content = to_html(text, f"Anticipo IRPF {args.period}")
