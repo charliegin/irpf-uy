@@ -6,12 +6,12 @@ Brokers soportados: **Interactive Brokers**, **Charles Schwab** y **eToro**.
 
 ## Qué hace
 
-1. Te dice qué extractos bajar de cada broker y cómo, paso a paso.
+1. Te dice qué extractos bajar de cada broker y cómo, paso a paso, incluida la foto de tus posiciones al 31/12/2025. Los precios salen de tus propios extractos: la única conexión externa es la cotización del dólar del BCU.
 2. Claude lee los extractos y arma un `events.csv` con cada venta, dividendo, interés y retención.
 3. Antes de calcular, concilia los totales con el resumen de cada broker y espera tu OK.
-4. Un script en Python convierte cada evento a pesos con la cotización BCU de su fecha y calcula el impuesto por **ficto** y por **real**.
+4. Un script en Python calcula el costo fiscal por promedio ponderado (con lo que tenías al 31/12/2025 a su valor de ese día), convierte a pesos con la cotización BCU del día anterior a cada operación y calcula el impuesto por **ficto** y por **real**, según el Decreto 148/007 art. 29 ter. Las normas usadas están en `reference/normativa.md`.
 5. Genera un informe HTML con:
-   - el monto a pagar y el método recomendado
+   - el monto a pagar y el método recomendado, comparando ficto y real sobre todo el año a la fecha (el método no se puede cambiar a mitad de año)
    - el crédito por retenciones del exterior
    - sugerencias para optimizar tus inversiones
    - las 10 mejores y las 10 peores ventas
@@ -28,8 +28,7 @@ git clone https://github.com/cnavas1986/irpf-uy.git ~/.claude/skills/irpf-uy
 
 Requisitos:
 - Claude Code
-- `python3`: el script solo usa la biblioteca estándar
-- `pandas` u `openpyxl`, para que Claude lea los XLS de eToro
+- `python3`. Los scripts solo usan la biblioteca estándar, incluido el que lee los XLSX de eToro, así que no hace falta instalar nada más.
 
 ## Uso
 
@@ -44,14 +43,22 @@ Para verificar el script:
 python3 -I ~/.claude/skills/irpf-uy/scripts/irpf_calc.py --selftest
 ```
 
-## Criterios por defecto
+## Criterios
 
-El script aplica estos criterios. Confirmalos con un contador antes de pagar.
+Según el Decreto 148/007 (art. 29 ter), el script aplica:
 
-- **Lotes comprados antes de 2026:** el costo fiscal es su valor de mercado al 31/12/2025.
-- **Retenciones del exterior:** se descuentan como crédito, hasta el 12% de cada dividendo. Con `--no-wht-credit` el cálculo no las descuenta.
-- **ETFs de cripto** (IBIT, ETHA): están alcanzados. La cripto que tenés directamente, no.
-- **Método:** ficto o real, el mismo para todo el año.
+- **Costo fiscal:** promedio ponderado de las compras. Lo que tenías al 31/12/2025, si cotiza en bolsa, entra a su valor de ese día.
+- **Tipo de cambio:** el BCU dólar billete del día anterior a cada operación.
+- **Método:** ficto (20% del precio de venta) o real, el mismo para todo el año.
+- **Pagos a cuenta:** sobre lo acumulado desde el 1/1, menos el anticipo anterior.
+
+Donde la norma no dice nada, el script aplica estos criterios por defecto. Confirmalos con un contador antes de pagar:
+
+- **Promedio:** se calcula por contribuyente, sumando todos los brokers.
+- **Retenciones del exterior:** se descuentan como crédito ya en el anticipo, hasta el 12% de cada dividendo. Con `--no-wht-credit` no se descuentan.
+- **Cripto:** los ETFs de cripto (IBIT, ETHA) están alcanzados; la cripto que tenés directamente, no.
+- **Tipo de cambio de dividendos e intereses:** el mismo del día anterior.
+- **Arrastre de pérdidas a años siguientes:** sin confirmar.
 
 ## Aviso
 

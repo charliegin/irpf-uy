@@ -1,27 +1,42 @@
 #!/usr/bin/env python3
 """IRPF Uruguay (Cat. I, capital mobiliario) anticipo calculator for foreign brokers.
 
-Reads a normalized events.csv, converts each event to UYU at the BCU rate of its
-date (USD billete, code 2225), and computes the anticipo under three methods:
+Reads a normalized events.csv, converts each event to UYU at the BCU rate (USD
+billete, code 2225) of the day before it (Decreto 148/007 art. 29 ter), and
+computes the anticipo under three methods:
   - ficto:      12% x 20% of sale proceeds  +  12% of dividends/interest/coupons
   - real_orig:  12% x (gains - losses + dividends/interest), original cost basis
-  - real_2025:  same, but pre-2026 lots use their 31/12/2025 market value as cost
+  - real_2025:  same, but shares held on 31/12/2025 cost their market value that day
 Foreign withholding is credited against each method's tax, capped at 12% of the
 income it was withheld from.
 
+Cost of a sale (--cost-method): 'average' (default, art. 29 ter) pools each symbol
+across all brokers: the 31/12/2025 holdings at their value that day plus every
+later buy, and each sale takes the weighted average cost. 'lot' uses cost_usd /
+cost_basis_2025_usd as given on each sale row (the broker's own lot matching).
+
 events.csv columns (header required, extra columns ignored):
-  broker, date, type, symbol, open_date, proceeds_usd, cost_usd,
+  broker, date, type, symbol, open_date, quantity, proceeds_usd, cost_usd,
   cost_basis_2025_usd, amount_usd, notes
-  type in {sale, dividend, interest, coupon, wht}
-  - sale:      proceeds_usd, cost_usd required; open_date (YYYY-MM-DD, or
-               'pre2026' if only that is known) tells if the lot predates
-               2026; cost_basis_2025_usd optional.
+  type in {sale, dividend, interest, coupon, wht, buy, holding, split}
+  - sale:      proceeds_usd, cost_usd required (broker lot cost, used by 'lot');
+               quantity required for 'average'; open_date (YYYY-MM-DD or
+               'pre2026') and cost_basis_2025_usd only matter for 'lot'.
   - dividend/interest/coupon: amount_usd = GROSS amount (before withholding).
   - wht:       amount_usd = foreign tax withheld, positive number.
+  - buy:       quantity and cost_usd (including commissions). Not taxable.
+  - holding:   position on 31/12/2025 (date 2025-12-31): quantity,
+               cost_basis_2025_usd (market value) and cost_usd (original cost,
+               only for the real_orig reference). Not taxable.
+  - split:     quantity = old shares per new share (3 for a 1-for-3 reverse
+               split, 0.5 for a 2-for-1 split). Not taxable.
+  Rows of the same date are applied in file order, so list them in the order
+  they happened.
 
 Usage:
   python3 -I irpf_calc.py events.csv --period "2026-01..2026-06" [--out report.html|report.md]
-          [--fx-file rates.csv] [--prior-paid-uyu 0] [--no-wht-credit] [--selftest]
+          [--fx-file rates.csv] [--fx-mode day-before|event|period-end]
+          [--cost-method average|lot] [--prior-paid-uyu 0] [--no-wht-credit] [--selftest]
 """
 
 import argparse
@@ -38,7 +53,9 @@ from decimal import ROUND_HALF_UP, Decimal
 RATE = Decimal("0.12")
 FICTO = Decimal("0.20")
 INCOME_TYPES = {"dividend", "interest", "coupon"}
-VALID_TYPES = INCOME_TYPES | {"sale", "wht"}
+TAXABLE_TYPES = INCOME_TYPES | {"sale", "wht"}
+POSITION_TYPES = {"buy", "holding", "split"}  # only feed the average-cost pools
+VALID_TYPES = TAXABLE_TYPES | POSITION_TYPES
 FRESH_START = date(2026, 1, 1)
 BCU_URL = "https://cotizaciones.bcu.gub.uy/wscotizaciones/servlet/awsbcucotizaciones"
 BCU_USD_BILLETE = "2225"
@@ -85,24 +102,42 @@ class FX:
     def __init__(self, cache_path=None, fx_file=None, offline=False):
         self.cache_path = cache_path
         self.rates = {}
+        # Date ranges already asked to BCU: a day inside one with no rate is a
+        # non-business day, so falling back to the previous rate is correct.
+        self.fetched = []
         self.offline = offline
         if cache_path and os.path.exists(cache_path):
             with open(cache_path) as f:
-                self.rates.update(json.load(f))
+                cached = json.load(f)
+            self.fetched = [tuple(x) for x in cached.pop("_fetched", [])]
+            self.rates.update(cached)
         if fx_file:
             with open(fx_file, newline="") as f:
                 for row in csv.DictReader(f):
                     self.rates[row["date"].strip()] = row["rate"].strip()
 
+    def _known(self, day):
+        iso = day.isoformat()
+        return iso in self.rates or any(s <= iso <= e for s, e in self.fetched)
+
     def ensure(self, dates):
-        missing = [x for x in dates if self._lookup(x) is None]
+        # A cached rate from a few days earlier is not enough: the exact day may
+        # have its own rate that was never fetched.
+        missing = [x for x in dates if not self._known(x)]
         if not missing or self.offline:
             return
         start = min(missing) - timedelta(days=FX_LOOKBACK_DAYS)
-        self.rates.update(fetch_bcu(start, max(missing)))
+        try:
+            self.rates.update(fetch_bcu(start, max(missing)))
+        except OSError as err:
+            if all(self._lookup(x) for x in missing):
+                print(f"BCU no responde ({err}); se usan cotizaciones del cache", file=sys.stderr)
+                return
+            raise
+        self.fetched.append((start.isoformat(), max(missing).isoformat()))
         if self.cache_path:
             with open(self.cache_path, "w") as f:
-                json.dump(dict(sorted(self.rates.items())), f, indent=1)
+                json.dump({**dict(sorted(self.rates.items())), "_fetched": sorted(self.fetched)}, f, indent=1)
 
     def _lookup(self, day):
         for back in range(FX_LOOKBACK_DAYS + 1):
@@ -147,6 +182,7 @@ def load_events(path):
                     "type": t,
                     "symbol": row.get("symbol", ""),
                     "open_date": parse_open_date(row.get("open_date", "")),
+                    "quantity": d(row.get("quantity")),
                     "proceeds": d(row.get("proceeds_usd")),
                     "cost": d(row.get("cost_usd")),
                     "basis2025": d(row.get("cost_basis_2025_usd")),
@@ -158,23 +194,94 @@ def load_events(path):
                 continue
             if t == "sale" and (ev["proceeds"] is None or ev["cost"] is None):
                 errors.append(f"line {n}: sale needs proceeds_usd and cost_usd")
-            elif t != "sale" and ev["amount"] is None:
+            elif t == "buy" and (ev["quantity"] is None or ev["cost"] is None):
+                errors.append(f"line {n}: buy needs quantity and cost_usd")
+            elif t == "holding" and (ev["quantity"] is None or ev["basis2025"] is None):
+                errors.append(f"line {n}: holding needs quantity and cost_basis_2025_usd")
+            elif t == "split" and not ev["quantity"]:
+                errors.append(f"line {n}: split needs quantity (old shares per new share)")
+            elif t in TAXABLE_TYPES - {"sale"} and ev["amount"] is None:
                 errors.append(f"line {n}: {t} needs amount_usd")
             else:
                 events.append(ev)
     return events, errors
 
 
-def compute(events, fx, wht_credit=True):
-    fx.ensure(sorted({e["date"] for e in events}))
+def apply_average_cost(events):
+    """Replace each sale's cost with the weighted average of its symbol's pool.
+
+    One pool per symbol for the whole taxpayer (all brokers), so a transfer between
+    brokers changes nothing. Pools start with the 31/12/2025 holdings at their value
+    that day (fresh start) and their original cost (real_orig reference).
+    """
+    warnings, pools = [], {}
+    for e in sorted(events, key=lambda e: (e["date"], e["line"])):
+        if e["type"] not in POSITION_TYPES | {"sale"}:
+            continue
+        p = pools.setdefault(e["symbol"].upper(), {"qty": Decimal(0), "orig": Decimal(0), "b2025": Decimal(0)})
+        if e["type"] == "holding":
+            p["qty"] += e["quantity"]
+            p["b2025"] += e["basis2025"]
+            p["orig"] += e["cost"] if e["cost"] is not None else e["basis2025"]
+            if e["cost"] is None:
+                warnings.append(f"line {e['line']} {e['symbol']}: posición al 31/12/2025 sin costo original; "
+                                "real_orig usa el valor a esa fecha")
+        elif e["type"] == "buy":
+            p["qty"] += e["quantity"]
+            p["orig"] += e["cost"]
+            p["b2025"] += e["cost"]
+        elif e["type"] == "split":
+            p["qty"] /= e["quantity"]
+        else:  # sale
+            q = e["quantity"]
+            if q is None or q > p["qty"] * Decimal("1.000001") or p["qty"] <= 0:
+                why = "sin quantity" if q is None else f"vende {q} y el pool tiene {p['qty']:.6f}"
+                warnings.append(f"line {e['line']} {e['symbol']}: {why}; se usa el costo del lote del broker "
+                                "(faltan compras o la foto al 31/12/2025)")
+                continue
+            share = min(q / p["qty"], Decimal(1))
+            cost, b2025 = p["orig"] * share, p["b2025"] * share
+            e["lot_cost"], e["lot_basis2025"] = e["cost"], e["basis2025"]
+            e["cost"], e["basis2025"], e["avg"] = cost, b2025, True
+            p["qty"] -= q
+            p["orig"] -= cost
+            p["b2025"] -= b2025
+            if p["qty"] < Decimal("0.000001"):
+                p["qty"] = p["orig"] = p["b2025"] = Decimal(0)
+    return warnings
+
+
+def semester_end(day):
+    return date(day.year, 6, 30) if day.month <= 6 else date(day.year, 12, 31)
+
+
+def compute(events, fx, wht_credit=True, fx_mode="day-before", today=None):
+    """fx_mode 'day-before' (default): each event at the BCU rate of the day before it,
+    as art. 29 ter of Decreto 148/007 sets for sales ("cotización del día anterior al
+    de la enajenación"); a non-business day falls back to the previous one.
+    'event': the rate of the event's own date. 'period-end': the rate of the
+    semester's close (30/06 or 31/12); a semester still open uses the latest rate."""
+    today = today or date.today()
+
+    def fx_day(e):
+        if fx_mode == "day-before":
+            return e["date"] - timedelta(days=1)
+        return e["date"] if fx_mode == "event" else min(semester_end(e["date"]), today)
+
+    fx.ensure(sorted({fx_day(e) for e in events}))
     warnings = []
     r = {
         "proceeds_uyu": Decimal(0), "gain_orig_uyu": Decimal(0), "gain_2025_uyu": Decimal(0),
         "income_uyu": Decimal(0), "wht_uyu": Decimal(0), "real_2025_complete": True,
-        "by_broker": {},
+        "by_broker": {}, "fx_mode": fx_mode, "fx_rates": {}, "fx_estimated": set(),
     }
     for e in events:
-        fx_date, rate = fx.get(e["date"])
+        fx_date, rate = fx.get(fx_day(e))
+        if fx_mode == "period-end":
+            end = semester_end(e["date"])
+            r["fx_rates"][end] = (fx_date, rate)
+            if end > today:
+                r["fx_estimated"].add(end)
         e["fx_date"], e["rate"] = fx_date, rate
         b = r["by_broker"].setdefault(e["broker"], {
             "proceeds_usd": Decimal(0), "gain_orig_usd": Decimal(0),
@@ -183,10 +290,12 @@ def compute(events, fx, wht_credit=True):
         b["rows"] += 1
         if e["type"] == "sale":
             pre2026 = e["open_date"] is not None and e["open_date"] < FRESH_START
-            if e["open_date"] is None:
+            if e["open_date"] is None and not e.get("avg"):
                 warnings.append(f"line {e['line']} {e['symbol']}: no open_date; assumed bought in 2026")
             basis2025 = e["cost"]
-            if pre2026:
+            if e.get("avg"):
+                basis2025 = e["basis2025"]  # weighted average from apply_average_cost
+            elif pre2026:
                 if e["basis2025"] is None:
                     r["real_2025_complete"] = False
                     warnings.append(f"line {e['line']} {e['symbol']}: lot opened {e['open_date']} "
@@ -259,6 +368,16 @@ def round_uyu(x):
     return int(x.quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
+def period_bounds(period):
+    """'2026-01..2026-06' -> (date(2026, 1, 1), date(2026, 6, 30))."""
+    m = re.fullmatch(r"\s*(\d{4})-(\d{2})\s*\.\.\s*(\d{4})-(\d{2})\s*", period)
+    if not m:
+        raise ValueError(f"--period must look like 2026-01..2026-06, got {period!r}")
+    y1, m1, y2, m2 = map(int, m.groups())
+    end = date(y2 + (m2 == 12), m2 % 12 + 1, 1) - timedelta(days=1)
+    return date(y1, m1, 1), end
+
+
 def boleto_period(period):
     """'2026-01..2026-06' -> 'hasta mes 06/2026'; a period ending in December -> '12/2026'."""
     m = re.search(r"(\d{4})-(\d{2})\s*$", period)
@@ -304,7 +423,7 @@ def sales_table(rows):
     return out
 
 
-def optimization_tips(events, r, sales):
+def optimization_tips(events, r, sales, scope="del período"):
     """Data-driven suggestions; each one only appears when the period's data triggers it."""
     tips = []
     proceeds_usd = sum((g["proceeds"] for g in sales), Decimal(0))
@@ -345,9 +464,9 @@ def optimization_tips(events, r, sales):
                     "venderlas antes del 31/12 baja el impuesto en el 12% de esa pérdida. Para mantener la "
                     "exposición podés recomprar un activo similar (confirmá con un contador que la DGI lo acepta).")
     elif net_real < 0:
-        tips.append(f"**Pérdida neta de {money(-net_real)} UYU (método real)**, que se traslada 2 años: "
-                    "podés realizar ganancias por ese monto sin pagar IRPF. Es buen momento para tomar ganancias "
-                    "de posiciones que ya querías vender.")
+        tips.append(f"**Pérdida neta de {money(-net_real)} UYU (método real)**. Dentro del mismo año podés realizar ganancias por ese monto sin pagar IRPF: "
+                    "es buen momento para tomar ganancias de posiciones que ya querías vender. Si sobra al cierre, "
+                    "no está confirmado que se pueda trasladar a años siguientes (pregunta I).")
 
     if income_usd and wht_usd / income_usd > Decimal("0.2"):
         tips.append(f"**Retención de EE.UU.: {wht_usd / income_usd * 100:.0f}% de los dividendos** "
@@ -365,47 +484,114 @@ def optimization_tips(events, r, sales):
                     "Las posiciones que todavía tenés desde 2025 conservan ese beneficio: guardá el valor al "
                     "31/12/2025 de cada una (extracto de diciembre) para usarlo como costo cuando las vendas.")
 
-    tips.append("_Sugerencias generadas a partir de las operaciones del período; no son asesoramiento financiero "
+    tips.append(f"_Sugerencias generadas a partir de las operaciones {scope}; no son asesoramiento financiero "
                 "ni tributario._")
     return tips
 
 
-def report(events, r, warnings, period, prior_paid):
+def year_table(m, my, labels, prior_paid):
+    paid_col = prior_paid > 0
+    out = ["| Método | Este período | Resto del año a la fecha | Año a la fecha | "
+           + ("Año menos anticipos pagados | " if paid_col else "") + "Pérdida neta (arrastre a confirmar) |",
+           "|---|---:|---:|---:|" + ("---:|" if paid_col else "") + "---:|"]
+    for k in ("ficto", "real_2025"):
+        rest = my[k]["to_pay"] - m[k]["to_pay"]
+        net = f"{round_uyu(max(my[k]['to_pay'] - prior_paid, Decimal(0))):,} | " if paid_col else ""
+        out.append(f"| {labels[k]} | {round_uyu(m[k]['to_pay']):,} | {round_uyu(rest):,} | "
+                   f"**{round_uyu(my[k]['to_pay']):,}** | {net}{money(my[k]['carry_forward'])} |")
+    out += ["", "_Impuesto a pagar en UYU, ya descontado el crédito por retenciones. En real, el año compensa "
+            "ganancias y pérdidas de todos los meses, así que el resto del año puede ser negativo: significa que "
+            "las pérdidas de esos meses bajan el total anual._"]
+    if paid_col:
+        out += ["", f"_Anticipos ya pagados este año: {money(prior_paid)} UYU._"]
+    return out
+
+
+def fx_note(r):
+    if r["fx_mode"] == "day-before":
+        return ("_Tipo de cambio: BCU dólar billete del día anterior a cada evento, o el hábil previo "
+                "(Decreto 148/007 art. 29 ter, pregunta E)._")
+    if r["fx_mode"] == "event":
+        return "_Tipo de cambio: BCU dólar billete de la fecha de cada evento (`--fx-mode event`)._"
+    parts = []
+    for end, (fx_date, rate) in sorted(r["fx_rates"].items()):
+        if end in r["fx_estimated"]:
+            parts.append(f"cierre {end:%d/%m/%Y}: **todavía no existe**, se usó el último disponible "
+                         f"({rate} del {fx_date}) ⚠️ estimado")
+        else:
+            parts.append(f"cierre {end:%d/%m/%Y}: {rate} (BCU del {fx_date})")
+    return ("_Tipo de cambio: todos los montos de cada semestre se convierten al BCU dólar billete del cierre "
+            "del semestre (pregunta E) — " + "; ".join(parts) + "._")
+
+
+def report(events, r, warnings, period, prior_paid, year=None):
+    """year: None, or (year_events, year_result, first_day, last_day) for the year-to-date view."""
     m = r["methods"]
+    my = year[1]["methods"] if year else None
+    if year:
+        scope_events, scope_r = year[0], year[1]
+        scope = f"del {year[2]:%d/%m/%Y} al {year[3]:%d/%m/%Y}"
+    else:
+        scope_events, scope_r, scope = events, r, "del período"
     out = [f"# Anticipo IRPF — período {period}", ""]
     out += ["## Resultado", "",
             "| Método | Base imponible (UYU) | Impuesto (UYU) | Crédito retenciones exterior | "
-            "A pagar (redondeado) | Pérdida a trasladar |",
+            "A pagar (redondeado) | Pérdida neta (arrastre a confirmar) |",
             "|---|---:|---:|---:|---:|---:|"]
     labels = {
         "ficto": "Ficto (2,4% ventas + 12% rendimientos)",
         "real_orig": "Real — costo original (solo referencia)",
         "real_2025": "Real — costo = valor 31/12/2025" + ("" if r["real_2025_complete"] else " ⚠️ incompleto"),
     }
+    # With a year view, prior anticipos are netted against the year (see year_table),
+    # not against this period alone.
+    period_paid = Decimal(0) if year else prior_paid
     for k, label in labels.items():
-        tax = max(m[k]["to_pay"] - prior_paid, Decimal(0))
+        tax = max(m[k]["to_pay"] - period_paid, Decimal(0))
         out.append(f"| {label} | {money(m[k]['base'])} | {money(m[k]['tax'])} | {money(-m[k]['credit']) if m[k]['credit'] else money(0)} | "
                    f"**{round_uyu(tax):,}** | {money(m[k]['carry_forward'])} |")
-    if prior_paid:
-        out += ["", f"_A pagar descuenta anticipos previos: {money(prior_paid)} UYU._"]
+    if period_paid:
+        out += ["", f"_A pagar descuenta anticipos previos: {money(period_paid)} UYU._"]
     if r["wht_credit_applied"]:
         out += ["", "_A pagar descuenta el crédito por impuestos retenidos en el exterior: cada retención hasta el 12% "
                 "del dividendo del que se retuvo (pregunta B)._"]
     else:
         out += ["", "_Crédito por retenciones del exterior **no aplicado** (`--no-wht-credit`): se recupera en la "
                 "declaración jurada anual (pregunta B)._"]
+    out += ["", fx_note(year[1] if year else r)]
 
     # Gains (and losses) accrued up to 31/12/2025 are outside IRPF, so pre-2026 lots
     # must use their 31/12/2025 value: real_orig is never a valid choice.
     candidates = ["ficto", "real_2025"]
     best = min(candidates, key=lambda k: m[k]["to_pay"])
-    if not r["real_2025_complete"]:
+    if not (scope_r if year else r)["real_2025_complete"]:
         warnings.append("Falta valor al 31/12/2025 de algún lote anterior a 2026: real_2025 está incompleto")
-    out += ["", "## Recomendación", "",
-            f"Menor impuesto en este período: **{labels[best]}** → "
-            f"**{round_uyu(max(m[best]['to_pay'] - prior_paid, Decimal(0))):,} UYU**.", "",
-            "- El método elegido **debe mantenerse todo el año** (el anticipo de julio–diciembre usa el mismo). "
-            "Pensá qué ventas vas a hacer en el segundo semestre antes de elegir.",
+
+    if year:
+        out += ["", f"## Vista del año a la fecha ({scope})", "",
+                "El método se elige una vez para todo el año, así que la comparación que importa es la anual."]
+        out += [""] + year_table(m, my, labels, prior_paid)
+        best_year = min(candidates, key=lambda k: my[k]["to_pay"])
+        pay = round_uyu(m[best_year]["to_pay"])
+        lines = [f"En el año a la fecha conviene **{labels[best_year]}** "
+                 f"({round_uyu(my[best_year]['to_pay']):,} UYU en el año). "
+                 f"Con ese método, este anticipo es **{pay:,} UYU**.", ""]
+        if prior_paid:
+            net = round_uyu(max(my[best_year]["to_pay"] - prior_paid, Decimal(0)))
+            lines += [f"- Ese monto cubre solo las operaciones del período. Con compensación anual (año a la fecha "
+                      f"menos los {money(prior_paid)} UYU ya pagados) serían **{net:,} UYU**. "
+                      "Confirmá con un contador cuál corresponde.", ""]
+        if best_year != best:
+            lines += [f"- ⚠️ Mirando solo este período convendría **{labels[best]}**, pero las operaciones del resto "
+                      "del año dan vuelta la comparación. Como el método no se puede cambiar, se recomienda el anual.", ""]
+        lines += ["- Las operaciones de acá a fin de año todavía pueden cambiar la comparación: "
+                  "recalculá antes de cada anticipo."]
+    else:
+        lines = [f"Menor impuesto en este período: **{labels[best]}** → "
+                 f"**{round_uyu(max(m[best]['to_pay'] - prior_paid, Decimal(0))):,} UYU**.", "",
+                 "- El método elegido **debe mantenerse todo el año** (el anticipo de julio–diciembre usa el mismo). "
+                 "Pensá qué ventas vas a hacer en el segundo semestre antes de elegir."]
+    out += ["", "## Recomendación", ""] + lines + [
             "- **Ficto** requiere declaración jurada al cierre del año con documentación. "
             "**Real** con los dos anticipos queda como definitivo (confirmalo con un contador, ver pregunta B).",
             "- Ventas con pérdida solo ayudan en el método real; en ficto se tributa sobre el 20% del monto vendido igual.",
@@ -416,7 +602,7 @@ def report(events, r, warnings, period, prior_paid):
             f"RUT = tu cédula → código de impuesto **119** → período **{boleto_period(period)}** "
             "→ importe en pesos → pagar online.", ""]
 
-    out += ["## Totales", "",
+    out += [f"## Totales del período {period}", "",
             f"- Ventas (precio de venta): {money(r['proceeds_uyu'])} UYU",
             f"- Resultado de ventas, costo original: {money(r['gain_orig_uyu'])} UYU",
             f"- Resultado de ventas, costo 31/12/2025: {money(r['gain_2025_uyu'])} UYU",
@@ -427,29 +613,30 @@ def report(events, r, warnings, period, prior_paid):
              else "→ crédito no aplicado en este cálculo"),
             ""]
 
-    sales = group_sales(events)
-    out += ["## Optimización de inversiones", ""] + [f"- {t}" for t in optimization_tips(events, r, sales)] + [""]
+    sales = group_sales(scope_events)
+    out += [f"## Optimización de inversiones ({scope})", ""]
+    out += [f"- {t}" for t in optimization_tips(scope_events, scope_r, sales, scope)] + [""]
     if sales:
         note = ("_Una fila por orden de venta (lotes sumados). Costo fiscal y resultado usan el valor al "
                 "31/12/2025 para lotes anteriores a 2026._")
         best = sorted((g for g in sales if g["gain"] > 0), key=lambda g: g["gain"], reverse=True)[:TOP_N]
         worst = sorted((g for g in sales if g["gain"] < 0), key=lambda g: g["gain"])[:TOP_N]
-        out += [f"## Mejores ventas (top {TOP_N})", "", note, ""]
-        out += (sales_table(best) if best else ["Ninguna venta con ganancia en el período."]) + [""]
-        out += [f"## Peores ventas (top {TOP_N})", "", note, ""]
-        out += (sales_table(worst) if worst else ["Ninguna venta con pérdida en el período."]) + [""]
+        out += [f"## Mejores ventas (top {TOP_N}, {scope})", "", note, ""]
+        out += (sales_table(best) if best else ["Ninguna venta con ganancia."]) + [""]
+        out += [f"## Peores ventas (top {TOP_N}, {scope})", "", note, ""]
+        out += (sales_table(worst) if worst else ["Ninguna venta con pérdida."]) + [""]
 
-    out += ["## Por broker (USD, para conciliar con el extracto)", "",
+    out += [f"## Por broker (USD {scope}, para conciliar con el extracto)", "",
             "| Broker | Filas | Ventas | Resultado ventas (costo orig.) | Rendimientos brutos | Retenciones |",
             "|---|---:|---:|---:|---:|---:|"]
-    for name, b in sorted(r["by_broker"].items()):
+    for name, b in sorted(scope_r["by_broker"].items()):
         out.append(f"| {name} | {b['rows']} | {money(b['proceeds_usd'])} | {money(b['gain_orig_usd'])} | "
                    f"{money(b['income_usd'])} | {money(b['wht_usd'])} |")
 
-    out += ["", "## Detalle por evento", "",
+    out += ["", f"## Detalle por evento ({scope})", "",
             "| # | Broker | Fecha | Tipo | Símbolo | USD | Resultado USD (orig / 2025) | TC BCU (fecha) | UYU | Notas |",
             "|---:|---|---|---|---|---:|---:|---|---:|---|"]
-    for e in sorted(events, key=lambda e: (e["date"], e["broker"])):
+    for e in sorted(scope_events, key=lambda e: (e["date"], e["broker"])):
         if e["type"] == "sale":
             usd, uyu = e["proceeds"], e["proceeds_uyu"]
             res = f"{money(e['gain_orig_usd'])} / {money(e['gain_2025_usd'])}"
@@ -468,12 +655,29 @@ def report(events, r, warnings, period, prior_paid):
             "IRPF de cada dividendo; el excedente se pierde. Dividendos y crédito van en la declaración jurada anual. "
             "Confirmar si el crédito puede descontarse ya en el anticipo o solo en la declaración jurada "
             "(en ese caso, recalcular con `--no-wht-credit`).",
-            "- **C.** ¿Ficto/real debe ser el mismo para todos los brokers? (se asumió que sí)",
+            "- **C.** (Según el decreto) Sin intermediario local que retenga, la opción ficto/real es una sola por "
+            "año para todas las rentas; el criterio por responsable aplica solo a quienes retienen (art. 44 quater).",
             "- **D.** ¿El importe del boleto se redondea o se trunca? (se redondeó al peso más cercano)",
-            "- **E.** Ganancias en USD convertidas al TC de la fecha de venta (criterio aplicado); "
-            "verificar si el costo debería convertirse al TC de la fecha de compra.",
+            {"day-before": "- **E.** (Según el decreto) Montos en USD convertidos al TC BCU del día anterior a cada "
+                           "operación (art. 29 ter). Pendiente: el decreto lo dice para las ventas; para dividendos e "
+                           "intereses se aplicó el mismo criterio. Con `--fx-mode period-end` o `event`, para comparar.",
+             "event": "- **E.** Montos en USD convertidos al TC BCU de la fecha de cada evento (`--fx-mode event`). "
+                      "El decreto (art. 29 ter) indica el del día anterior a la operación.",
+             "period-end": "- **E.** Montos en USD convertidos al TC BCU del cierre de cada semestre "
+                           "(`--fx-mode period-end`). El decreto (art. 29 ter) indica el del día anterior a la "
+                           "operación."}[r["fx_mode"]],
             "- **F.** (Criterio aplicado) ETFs que replican cripto (IBIT, ETHA): se tratan como activo financiero alcanzado, "
-            "tanto sus pérdidas como sus ganancias futuras. Solo se excluye la cripto tenida directamente.",
+            "tanto sus pérdidas como sus ganancias. La normativa no menciona criptoactivos: el tratamiento de la cripto "
+            "tenida directamente (aquí excluida) también está sin confirmar.",
+            ("- **G.** (Según el decreto) Costo fiscal por promedio ponderado de las compras de bienes idénticos "
+             "(art. 29 ter), con las tenencias al 31/12/2025 a su valor a esa fecha. Se promedió por contribuyente, "
+             "sumando todos los brokers; confirmar si corresponde promediar por cuenta." if r.get("cost_method") == "average"
+             else "- **G.** Costo de cada venta según el lote que asignó el broker (`--cost-method lot`). El decreto "
+                  "(art. 29 ter) indica promedio ponderado."),
+            "- **H.** Comisiones: se sumaron al costo de compra y se restaron del precio de venta; los gastos de "
+            "transferencia, retiro e intereses deudores no se dedujeron. La normativa no lo detalla.",
+            "- **I.** Arrastre de pérdidas a ejercicios siguientes: la reglamentación revisada no lo menciona "
+            "(la columna \"Pérdida\" es informativa).",
             "",
             "_Este cálculo es una ayuda, no asesoramiento tributario._", ""]
     return "\n".join(out)
@@ -528,7 +732,7 @@ def to_html(md, title):
         if line.startswith("# "):
             out.append(f"<h1>{_inline(line[2:])}</h1>")
             out.append(f'<p class="meta">Generado {date.today().isoformat()} · '
-                       "TC BCU dólar billete (2225) por fecha de cada evento</p>")
+                       "TC BCU dólar billete (2225)</p>")
         elif line.startswith("## "):
             if in_section:
                 out.append("</section>")
@@ -582,7 +786,7 @@ def selftest():
             e.setdefault("symbol", "X")
             e.setdefault("open_date", date(2026, 2, 1))
             e.setdefault("basis2025", None)
-        return compute(evs, fx)[0]["methods"]
+        return compute(evs, fx, fx_mode="event")[0]["methods"]
 
     # Example: buy 100 sell 200 -> real 12, ficto 4.8
     m = run([{"date": mar, "type": "sale", "proceeds": Decimal(200), "cost": Decimal(100)}])
@@ -616,6 +820,43 @@ def selftest():
              {"date": mar, "type": "dividend", "amount": Decimal(100)},
              {"date": mar, "type": "wht", "amount": Decimal(30)}])
     assert m["real_orig"]["tax"] == Decimal("1.2") and m["real_orig"]["to_pay"] == 0, m
+    # Period parsing, including a December end
+    assert period_bounds("2026-01..2026-06") == (date(2026, 1, 1), jun30)
+    assert period_bounds("2026-07..2026-12") == (date(2026, 7, 1), date(2026, 12, 31))
+    # A cached rate from 26/06 must not stand in for an unfetched 30/06
+    probe = FX(offline=True)
+    probe.rates = {"2026-06-26": "40.0"}
+    assert not probe._known(date(2026, 6, 30))
+    probe.fetched = [("2026-06-20", "2026-06-30")]
+    assert probe._known(date(2026, 6, 28))
+    # Period-end FX: a March sale is converted at the 30/06 rate (40.116), not March's (1)
+    evs = [{"date": mar, "type": "sale", "proceeds": Decimal(200), "cost": Decimal(100), "line": 2,
+            "broker": "t", "symbol": "X", "open_date": date(2026, 2, 1), "basis2025": None}]
+    m = compute(evs, fx, fx_mode="period-end", today=date(2026, 10, 21))[0]["methods"]
+    assert m["real_orig"]["tax"] == Decimal("481.392"), m
+    # Day-before FX: a sale on 03/03 uses the 02/03 rate
+    evs = [{"date": date(2026, 3, 3), "type": "sale", "proceeds": Decimal(200), "cost": Decimal(100), "line": 2,
+            "broker": "t", "symbol": "X", "open_date": date(2026, 2, 1), "basis2025": None}]
+    compute(evs, fx, today=date(2026, 10, 21))
+    assert evs[0]["fx_date"] == "2026-03-02", evs[0]
+
+    # Weighted average across brokers: 10 held on 31/12/2025 worth 100 each (cost 80),
+    # 10 bought at 120 in another broker; selling 5 costs the average 110 (orig 100).
+    def pos(t, q, cost=None, b25=None, line=0, broker="A", day=mar, proceeds=None):
+        return {"type": t, "quantity": Decimal(q), "cost": cost, "basis2025": b25, "line": line,
+                "broker": broker, "symbol": "Y", "date": day, "open_date": None, "proceeds": proceeds}
+    evs = [pos("holding", 10, Decimal(800), Decimal(1000), 1, day=date(2025, 12, 31)),
+           pos("buy", 10, Decimal(1200), None, 2, broker="B"),
+           pos("sale", 5, Decimal(400), Decimal(500), 3, proceeds=Decimal(700))]
+    assert not apply_average_cost(evs)
+    assert evs[2]["basis2025"] == Decimal(550) and evs[2]["cost"] == Decimal(500), evs[2]
+    # A 1-for-2 reverse split halves the shares, keeps the cost
+    evs = [pos("buy", 10, Decimal(1000), None, 1), pos("split", 2, line=2),
+           pos("sale", 5, Decimal(0), None, 3, proceeds=Decimal(1500))]
+    assert not apply_average_cost(evs) and evs[2]["cost"] == Decimal(1000), evs[2]
+    # Selling more than the pool falls back to the broker's lot cost, with a warning
+    evs = [pos("buy", 1, Decimal(100), None, 1), pos("sale", 5, Decimal(400), None, 2, proceeds=Decimal(600))]
+    assert apply_average_cost(evs) and evs[1]["cost"] == Decimal(400) and not evs[1].get("avg")
     print("selftest OK")
 
 
@@ -627,6 +868,12 @@ def main():
     ap.add_argument("--fx-file", help="CSV with columns date,rate to override/skip BCU")
     ap.add_argument("--fx-cache", help="default: fx_cache.json next to events.csv")
     ap.add_argument("--prior-paid-uyu", default="0", help="anticipos already paid this year")
+    ap.add_argument("--fx-mode", choices=["day-before", "event", "period-end"], default="day-before",
+                    help="BCU rate of the day before each event (default, art. 29 ter), of its own date, "
+                         "or of the semester's close (question E)")
+    ap.add_argument("--cost-method", choices=["average", "lot"], default="average",
+                    help="weighted average per symbol across brokers (default, art. 29 ter) "
+                         "or each broker's own lot cost (question G)")
     ap.add_argument("--no-wht-credit", action="store_true",
                     help="do not credit foreign withholding in this anticipo (question B)")
     ap.add_argument("--selftest", action="store_true")
@@ -645,10 +892,35 @@ def main():
     if not events:
         print("events.csv has no events", file=sys.stderr)
         sys.exit(1)
+    start, end = period_bounds(args.period)
+    # Average cost needs every buy and the 31/12/2025 holdings, so it runs on the
+    # whole file before any filtering.
+    cost_warnings = apply_average_cost(events) if args.cost_method == "average" else []
+    if args.cost_method == "average" and not any(e["type"] in POSITION_TYPES for e in events):
+        cost_warnings.append("events.csv no tiene filas buy/holding: el promedio ponderado no se pudo "
+                             "calcular y se usó el costo de cada lote")
+    taxable = [e for e in events if e["type"] in TAXABLE_TYPES]
+    # events.csv may hold the whole year to date: the anticipo uses the period, and
+    # the method comparison uses the year, because the method is fixed for the year.
+    period_events = [e for e in taxable if start <= e["date"] <= end]
+    year_events = [e for e in taxable if e["date"].year == start.year]
+    if not period_events:
+        print(f"events.csv has no events in {args.period}", file=sys.stderr)
+        sys.exit(1)
     cache = args.fx_cache or os.path.join(os.path.dirname(os.path.abspath(args.events)), "fx_cache.json")
     fx = FX(cache_path=cache, fx_file=args.fx_file)
-    r, warnings = compute(events, fx, wht_credit=not args.no_wht_credit)
-    text = report(events, r, warnings, args.period, Decimal(args.prior_paid_uyu))
+    credit = not args.no_wht_credit
+    r, warnings = compute(period_events, fx, wht_credit=credit, fx_mode=args.fx_mode)
+    year = None
+    if len(year_events) > len(period_events):
+        ry, warnings = compute(year_events, fx, wht_credit=credit, fx_mode=args.fx_mode)
+        year = (year_events, ry, date(start.year, 1, 1), max(e["date"] for e in year_events))
+    warnings = cost_warnings + warnings
+    r["cost_method"] = args.cost_method
+    ignored = len(taxable) - len(year_events)
+    if ignored:
+        warnings.append(f"{ignored} eventos de otros años en events.csv: no se usaron")
+    text = report(period_events, r, warnings, args.period, Decimal(args.prior_paid_uyu), year)
     if args.out:
         if args.out.endswith(".html"):
             content = to_html(text, f"Anticipo IRPF {args.period}")
