@@ -1,0 +1,31 @@
+name: Algo no funciona
+description: Un error, un resultado raro o un archivo que no se lee bien.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **Este repo es público.** No subas extractos reales, `events.csv`, informes, capturas de tu cuenta, números de cuenta, cédula ni montos reales. Si necesitás mostrar un caso, describí el formato o usá números inventados.
+  - type: checkboxes
+    id: privacidad
+    attributes:
+      label: Privacidad
+      options:
+        - label: Confirmo que este issue no tiene datos personales ni extractos reales.
+          required: true
+  - type: input
+    id: broker
+    attributes:
+      label: Broker y archivo
+      placeholder: "Schwab, Realized Gain/Loss en CSV"
+  - type: textarea
+    id: que-paso
+    attributes:
+      label: Qué esperabas y qué pasó
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Mensaje de error (sin datos tuyos)
+      render: text

@@ -37,6 +37,10 @@ Requisitos:
 
 El skill crea `inputs/` en esa carpeta y te guía desde ahí. Tus extractos, el `events.csv` y los informes quedan **solo en tu carpeta de datos**: nunca los subas a este repositorio ni a ningún otro.
 
+### Probar sin tus datos
+
+En `examples/` hay un ejemplo con operaciones inventadas, que corre sin conexión. Las instrucciones están en `examples/README.md`.
+
 ### Vencimientos
 
 | Pago a cuenta | Qué cubre | Vence |
@@ -90,4 +94,6 @@ Es una ayuda para hacer el cálculo, **no es asesoramiento tributario ni financi
 
 ## Licencia
 
-[MIT](LICENSE). Podés usarlo, modificarlo y redistribuirlo libremente; los aportes son bienvenidos.
+[MIT](LICENSE). Podés usarlo, modificarlo y redistribuirlo libremente.
+
+Los aportes son bienvenidos: leé [CONTRIBUTING.md](CONTRIBUTING.md). Lo más importante es **no subir nunca extractos ni datos personales** en issues o pull requests.

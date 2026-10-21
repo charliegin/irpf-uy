@@ -1,0 +1,26 @@
+name: Nuevo broker o cambio de regla
+description: Proponer otro broker, o corregir un criterio de cálculo con su fuente.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **Este repo es público.** No subas extractos reales ni datos personales. Para un broker nuevo, describí las columnas del archivo sin los valores.
+  - type: checkboxes
+    id: privacidad
+    attributes:
+      label: Privacidad
+      options:
+        - label: Confirmo que este issue no tiene datos personales ni extractos reales.
+          required: true
+  - type: textarea
+    id: propuesta
+    attributes:
+      label: Qué proponés
+    validations:
+      required: true
+  - type: input
+    id: fuente
+    attributes:
+      label: Norma o fuente (si es un cambio de regla)
+      placeholder: "Decreto 148/007 art. 29 ter, Resolución DGI ..."
