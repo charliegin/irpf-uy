@@ -23,7 +23,7 @@ Claude solo lee y ordena los datos. Todas las cuentas las hace `scripts/irpf_cal
 ## Instalación
 
 ```
-git clone <url-del-repo> ~/.claude/skills/irpf-uy
+git clone https://github.com/cnavas1986/irpf-uy.git ~/.claude/skills/irpf-uy
 ```
 
 Requisitos:
