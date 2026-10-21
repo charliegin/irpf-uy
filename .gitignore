@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Personal data never belongs in this repo: it lives in each user's data directory.
+inputs/
+events.csv
+fx_cache.json
+report-*.html
+report-*.md
