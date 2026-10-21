@@ -87,3 +87,7 @@ Donde la norma no dice nada, el script aplica estos criterios por defecto. Confi
 ## Aviso
 
 Es una ayuda para hacer el cálculo, **no es asesoramiento tributario ni financiero**. Las reglas resumen los textos oficiales vigentes en octubre de 2026 (ver `reference/normativa.md`). El régimen se ajustó varias veces durante 2026: antes de cada anticipo, revisá en [IMPO](https://www.impo.com.uy) si hay decretos o resoluciones de la DGI nuevos.
+
+## Licencia
+
+[MIT](LICENSE). Podés usarlo, modificarlo y redistribuirlo libremente; los aportes son bienvenidos.
