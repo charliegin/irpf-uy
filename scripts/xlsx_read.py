@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2026 Carlos Navas
 """Read an .xlsx (for example the eToro statement) using only the stdlib.
 
 CLI:     python3 -I xlsx_read.py file.xlsx   -> every sheet as tab-separated rows

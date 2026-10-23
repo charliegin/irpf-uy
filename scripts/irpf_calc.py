@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2026 Carlos Navas
 """IRPF Uruguay (Cat. I, capital mobiliario) anticipo calculator for foreign brokers.
 
 Reads a normalized events.csv, converts each event to UYU at the BCU rate (USD

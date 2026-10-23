@@ -42,3 +42,7 @@ python3 -I scripts/irpf_calc.py --selftest
 
 - Un cambio por PR, con una descripción breve de qué y por qué.
 - Si cambia el resultado del cálculo, mostralo con el ejemplo de `examples/`, nunca con datos reales.
+
+## Licencia de los aportes
+
+Al enviar un aporte aceptás que se publique con las mismas licencias del proyecto: [PolyForm Noncommercial 1.0.0](LICENSES/PolyForm-Noncommercial-1.0.0.md) para el código de `scripts/` y [CC BY-NC-SA 4.0](LICENSES/CC-BY-NC-SA-4.0.txt) para la documentación y los ejemplos. Ver [LICENSE](LICENSE).

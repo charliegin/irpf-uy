@@ -1,21 +1,30 @@
-MIT License
-
 Copyright (c) 2026 Carlos Navas
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Este proyecto usa dos licencias, según el tipo de archivo:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. Código: todo lo que está en scripts/
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+   PolyForm Noncommercial License 1.0.0
+   https://polyformproject.org/licenses/noncommercial/1.0.0
+   Texto completo: LICENSES/PolyForm-Noncommercial-1.0.0.md
+
+2. Documentación y ejemplos: todo lo demás (SKILL.md, README.md,
+   CONTRIBUTING.md, reference/, examples/ y las plantillas de .github/)
+
+   Creative Commons Atribución-NoComercial-CompartirIgual 4.0 Internacional
+   (CC BY-NC-SA 4.0)
+   https://creativecommons.org/licenses/by-nc-sa/4.0/
+   Texto completo: LICENSES/CC-BY-NC-SA-4.0.txt
+
+Resumen (no reemplaza los textos legales): podés usar, copiar, modificar y
+compartir este proyecto sin fines comerciales, citando la fuente. No se
+puede vender ni usar con fines comerciales sin permiso del autor. Si
+compartís una versión modificada de la documentación, tiene que llevar la
+misma licencia.
+
+Para un uso comercial, escribí al autor.
+
+Las versiones publicadas antes de este cambio (hasta el commit 1d8c7cd)
+se distribuyeron con licencia MIT.
+
+Required Notice: Copyright (c) 2026 Carlos Navas (https://github.com/charliegin/irpf-uy)

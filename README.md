@@ -94,6 +94,11 @@ Es una ayuda para hacer el cálculo, **no es asesoramiento tributario ni financi
 
 ## Licencia
 
-[MIT](LICENSE). Podés usarlo, modificarlo y redistribuirlo libremente.
+Es un proyecto para la comunidad, **sin fines comerciales**:
+
+- **Código** (`scripts/`): [PolyForm Noncommercial 1.0.0](LICENSES/PolyForm-Noncommercial-1.0.0.md).
+- **Documentación y ejemplos** (todo lo demás): [CC BY-NC-SA 4.0](LICENSES/CC-BY-NC-SA-4.0.txt).
+
+Podés usarlo, modificarlo y compartirlo sin fines comerciales, citando la fuente. No se puede vender ni usar con fines comerciales sin permiso. Si compartís una versión modificada de la documentación, tiene que llevar la misma licencia. Los detalles están en [LICENSE](LICENSE).
 
 Los aportes son bienvenidos: leé [CONTRIBUTING.md](CONTRIBUTING.md). Lo más importante es **no subir nunca extractos ni datos personales** en issues o pull requests.
